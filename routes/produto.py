@@ -1,71 +1,144 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import Depends, APIRouter, HTTPException, Path, Body
+from pydantic import BaseModel, Field
 from uuid import uuid4
-from datetime import datetime
-from pydantic import Field
-from fastapi import APIRouter
-from passlib.context import CryptContext
-from db import DB
+from sqlalchemy import create_engine, Column, String
+
+from . import models
+from . models import Produto, ProdutoOut
+from .database import SessionLocal, engine
+from sqlalchemy.orm import Session as ORM_Session
+
+models.Base.metadata.create_all(bind=engine)
 
 router = APIRouter(
     prefix="/produto",
     tags=["produto"]
 )
 
-class Produto(BaseModel):
-    id_produto: str = None
-    nome: str
-    preco: float
-    peso: float
+class ProdutoIn(BaseModel):
+    nome: str = Field(..., description="Nome do produto.")
+    peso: float = Field(..., description="Peso do produto.")
+    preco: float = Field(..., description="Preço do produto.")
 
-@router.post("/", response_model=Produto)
-def create_produto(produto: Produto):
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    """Rota para criar um novo produto"""
+@router.post("/", response_model=ProdutoOut, summary="Criar Produto")
+def create(produto_in: ProdutoIn = Body(
+        ...,
+        description="Dados do produto a serem criados.",
+        example={
+            "nome": "Camisa Coxa",
+            "peso": 100,
+            "preco": 199.99
+        }
+    ), db: ORM_Session = Depends(get_db)):
+    """
+    Cria um novo produto com os dados fornecidos.
 
-    if produto.id_produto is None:
-        produto.id_produto = str(uuid4())
-    DB.produtos.append(produto)
-    return produto
+    Parâmetros:
+    - `produtoIn`: Dados do produto a serem criados.
+        Exemplo:
+        ```
+        {
+            "nome": "Camisa Coxa",
+            "peso": 100,
+            "preco": 199.99
+        }
+        ```
+    """
+    produto = Produto(
+        nome=produto_in.nome,
+        peso=produto_in.peso,
+        preco=produto_in.preco,
+        id_produto=str(uuid4())
+    )
+    db.add(produto)
+    db.commit()
+    db.refresh(produto)
+    return ProdutoOut.from_orm(produto) 
 
-@router.get("/")
-def get_produtos():
-
-    """Rota para listar todos os produtos"""
-
-    return DB.produtos
-
-@router.get("/{id}")
-def get_produto(id: str):
-
-    """Rota para listar um produto específico"""
-
-    for p in DB.produtos:
-        if p.id_produto == id:
-            return p
-    return {"message": "Produto não encontrado"}
-
-
-@router.put("/{id}")
-def update_produto(id: str, produto: Produto):
-
-    """Rota para atualizar um produto"""
-
-    for p in DB.produtos:
-        if p.id_produto == id:
-            p.nome = produto.nome
-            p.preco = produto.preco
-            p.peso = produto.peso
-            return p    
-    return {"message": "Produto não encontrado"}
-
-@router.delete("/{id}")
-def delete_produto(id: str):
-
-    """Rota para deletar um produto"""
+@router.get("/", summary="Listar Produtos")
+def get_all(db: ORM_Session = Depends(get_db)):
+    """
+    Lista todos os produtos cadastrados no sistema.
+    """
+    return db.query(Produto).all()
     
-    for i, p in enumerate(DB.produtos):
-        if p.id_produto == id:
-            DB.produtos.pop(i)
-            return {"message": "Produto removido"}
-    return {"message": "Produto não encontrado"}
+
+@router.get("/{id}", response_model=ProdutoOut, summary="Obter Produto")
+def get_produto(id_produto: str, db: ORM_Session = Depends(get_db)):
+    """
+    Obtém os detalhes de um produto específico.
+
+    Parâmetros:
+    - `id`: ID do produto que deseja obter.
+        Exemplo:
+        ```
+        "b2a53b2a-5151-4ef7-ae94-c4992dd119ef"
+        ```
+    """
+    produto = db.query(Produto).filter(Produto.id_produto == id_produto).first()
+    if produto:
+        return ProdutoOut.from_orm(produto)  # Conversão para Pydantic.
+    raise HTTPException(status_code=404, detail="Produto não encontrado")
+
+@router.put("/{id}", response_model=ProdutoOut, summary="Atualizar Produto")
+def update(id: str = Path(..., description="ID do produto que deseja atualizar."),
+           produtoIn: ProdutoIn = Body(
+               ...,
+               description="Dados atualizados do produto.",
+               example={
+                   "nome": "Novo Nome",
+                   "peso": 2.0,
+                   "preco": 150.0
+               }
+           ), db: ORM_Session = Depends(get_db)):
+    """
+    Atualiza os dados de um produto específico.
+
+    Parâmetros:
+    - `id`: ID do produto que deseja atualizar.
+    - `produtoIn`: Dados atualizados do produto.
+        Exemplo:
+        ```
+        ID: "b2a53b2a-5151-4ef7-ae94-c4992dd119ef"
+        Dados:
+        {
+            "nome": "Camisa Coxa Doido",
+            "peso": 200,
+            "preco": 399.99
+        }
+        ```
+    """
+    produto = db.query(Produto).filter(Produto.id_produto == id).first()
+    if not produto:
+        raise HTTPException(404, detail=f"Produto com id {id} não encontrado")
+    produto.nome = produtoIn.nome
+    produto.peso = produtoIn.peso
+    produto.preco = produtoIn.preco
+    db.commit()
+    db.refresh(produto)
+    return ProdutoOut.from_orm(produto)
+
+@router.delete("/{id}", summary="Deletar Produto")
+def delete(id: str = Path(..., description="ID do produto que deseja deletar."), db: ORM_Session = Depends(get_db)):
+    """
+    Remove um produto específico do sistema.
+
+    Parâmetros:
+    - `id`: ID do produto que deseja deletar.
+        Exemplo:
+        ```
+        "b2a53b2a-5151-4ef7-ae94-c4992dd119ef"
+        """
+    produto = db.query(Produto).filter(Produto.id_produto == id).first()
+    if not produto:
+        raise HTTPException(404, detail=f"Produto com id {id} não encontrado")
+    db.delete(produto)
+    db.commit()
+    return {"message": "Produto deletado com sucesso"}

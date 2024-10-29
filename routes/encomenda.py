@@ -1,152 +1,215 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import Depends, APIRouter, HTTPException, Path, Body
 from pydantic import BaseModel, Field
-from typing import List, Dict
-from datetime import datetime
 from uuid import uuid4
-from db import DB  
+from sqlalchemy import create_engine, Column, String
+from datetime import datetime
+from . import models
+from .database import SessionLocal, engine
+from sqlalchemy.orm import Session as ORM_Session
+from typing import List
+from . models import Produto, Encomenda, LocalizacaoOut, Localizacao
+import requests
+router = APIRouter(
+    prefix="/encomenda",
+    tags=["encomenda"]
+)
+
+class EncomendaOut(BaseModel):
+    id_encomenda: str
+    valor_total: float
+    data_postagem: datetime
+    endereco_origem: str
+    endereco_destino: str
+    peso_total: float
+    id_usuario_comprador: str
+    id_usuario_vendedor: str
+
+
+
+class EncomendaIn(BaseModel):
+    endereco_origem: str = Field(..., description="Endereço de origem da encomenda.")
+    endereco_destino: str = Field(..., description="Endereço de destino da encomenda.")
+    produto_ids: List[str] = Field(..., description="IDs dos produtos na encomenda.")
+    id_usuario_comprador: str = Field(..., description="ID do usuário comprador.")
+    id_usuario_vendedor: str = Field(..., description="ID do usuário vendedor.")
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+from fastapi import Depends, APIRouter, HTTPException, Path, Body
+from pydantic import BaseModel, Field
+from uuid import uuid4
+from sqlalchemy.orm import Session as ORM_Session
+from sqlalchemy.exc import IntegrityError
+
+from . import models
+from .database import SessionLocal
+from .models import Encomenda
 
 router = APIRouter(
     prefix="/encomenda",
     tags=["encomenda"]
 )
 
-status_template = ["Em Preparação", "Em Trânsito", "Entregue"]
-
-class Encomenda(BaseModel):
-    id_encomenda: str = Field(default_factory=lambda: str(uuid4()))
-    valor_total: float = 0.0
-    data_postagem: datetime = Field(default_factory=datetime.now)
-    endereco_origem: str
-    endereco_destino: str
-    peso_total: float = 0.0
-    status: Dict[datetime, str] = {datetime.now(): status_template[0]}
-    item_ids: List[str]
-    id_usuario_comprador: str
-    id_usuario_vendedor: str
 
 
-def calcular_valor_total(ids_produtos: List[str]) -> float:
-    total = 0.0
-    for produto_id in ids_produtos:
-        produto = next((p for p in DB.produtos if p.id_produto == produto_id), None)
-        if produto is not None:
-            total += produto.preco
-        else:
-            raise HTTPException(status_code=404, detail=f"Produto com ID {produto_id} não encontrado")
-    return total
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
+@router.post("/", response_model=EncomendaOut, summary="Criar Encomenda")    
+def create_encomenda(encomendaIn: EncomendaIn = Body(
+        ...,
+        description="Dados da encomenda a serem criados.",
+        example={
+            "endereco_origem": "Rua casa do ator 99",
+            "endereco_destino": "Rua casa do ator 100",
+            "produto_ids": ["4956c5f1-31ec-4eb4-b417-90753e7bb6fd"],
+            "id_usuario_comprador": "b2a53b2a-5151-4ef7-ae94-c4992dd119ef",
+            "id_usuario_vendedor": "13cc3687-050a-4e0f-8f46-3fe63aa6e5db"
+        }
+    ), db: ORM_Session = Depends(get_db)):
+    try:
 
-def calcular_peso_total(ids_produtos: List[str]) -> float:
-    total = 0.0
-    for produto_id in ids_produtos:
-        produto = next((p for p in DB.produtos if p.id_produto == produto_id), None)
-        if produto is not None:
-            total += produto.peso
-        else:
-            raise HTTPException(status_code=404, detail=f"Produto com ID {produto_id} não encontrado")
-    return total
-
-
-def valida_user(id_usuario_comprador, id_usuario_vendedor):
-    comprador = next((u for u in DB.usuarios if u.id_usuario == id_usuario_comprador), None)
-    vendedor = next((u for u in DB.usuarios if u.id_usuario == id_usuario_vendedor), None)
-    if not comprador and not vendedor:
-        raise HTTPException(status_code=404, detail=f"Usuario Comprador com id {id_usuario_comprador} e Usuario Vendedor com id {id_usuario_vendedor} não encontrados")
-    if not comprador:
-        raise HTTPException(status_code=404, detail=f"Usuario Comprador com id {id_usuario_comprador} não encontrado")
-    if not vendedor:
-        raise HTTPException(status_code=404, detail=f"Usuario Vendedor com id {id_usuario_vendedor} não encontrado")
-
-
-@router.post("/", response_model=Encomenda)    
-def create_encomenda(encomenda: Encomenda):
-
-    """ Rota para criar uma nova encomenda """
-
-    valida_user(encomenda.id_usuario_comprador, encomenda.id_usuario_vendedor)
-    encomenda.valor_total = calcular_valor_total(encomenda.item_ids)
-    encomenda.peso_total = calcular_peso_total(encomenda.item_ids)
-
-    DB.encomendas.append(encomenda)  
-    return encomenda
-
-
-@router.get("/")
-def get_encomendas():
-
-    """ Rota para listar todas as encomendas """
-
-    return DB.encomendas
-
-
-@router.get("/{id}")
-def get_encomenda(id: str):
-
-    """ Rota para listar uma encomenda específica através do id """
-
-    for e in DB.encomendas:
-        if e.id_encomenda == id:
-            return e
-    return {"message": f"Encomenda com id {id} não encontrada"}
-
-
-@router.put("/{id}")
-def update_encomenda(id: str, encomenda: Encomenda):
-
-    """ Rota para atualizar uma encomenda específica através do id """
-
-    for e in DB.encomendas:
-        if e.id_encomenda == id:
-            valida_user(encomenda.id_usuario_comprador, encomenda.id_usuario_vendedor)
-            e.valor_total = calcular_valor_total(encomenda.item_ids)
-            e.peso_total = calcular_peso_total(encomenda.item_ids)
-            e.endereco_origem = encomenda.endereco_origem
-            e.endereco_destino = encomenda.endereco_destino
-            e.status = encomenda.status
-            e.item_ids = encomenda.item_ids
-            e.id_usuario_comprador = encomenda.id_usuario_comprador
-            e.id_usuario_vendedor = encomenda.id_usuario_vendedor
-            return e
-    return {"message": f"Encomenda com id {id} não encontrada"}
-
-
-@router.delete("/{id}")
-def delete_encomenda(id: str):
-
-    """ Rota para deletar uma encomenda específica através do id """
-
-    for i, e in enumerate(DB.encomendas):
-        if e.id_encomenda == id:
-            DB.encomendas.pop(i)
-            return {"message": "Encomenda removida"}
-    return {"message": f"Encomenda com id {id} não encontrada"}
-
-
-@router.put("/{id}/status")
-def update_status_encomenda(id: str):
-
-    """ Rota para atualizar o status de uma encomenda específica através do id """
-
-    for e in DB.encomendas:
-        if e.id_encomenda == id:
-            values = e.status.values()
-            if status_template[2] in values:
-                return {"message": "Encomenda já foi entregue"}
-            elif status_template[1] in values:
-                e.status[datetime.now()] = status_template[2]
+        encomenda = Encomenda(
+            endereco_origem=encomendaIn.endereco_origem,
+            endereco_destino=encomendaIn.endereco_destino,
+            id_usuario_comprador=encomendaIn.id_usuario_comprador,
+            id_usuario_vendedor=encomendaIn.id_usuario_vendedor
+        )
+        
+        valor_total = 0
+        peso_total = 0
+        for produto_id in encomendaIn.produto_ids:
+            produto = db.query(Produto).filter(Produto.id_produto == produto_id).first()
+            if produto:
+                valor_total += produto.preco
+                peso_total += produto.peso
+                encomenda.produtos.append(produto)
             else:
-                e.status[datetime.now()] = status_template[1]
-                return e
-            return e
-    return {"message": f"Encomenda com id {id} não encontrada"}
+                raise HTTPException(status_code=404, detail=f"Produto com ID {produto_id} não encontrado")
+        
+        encomenda.valor_total = valor_total
+        encomenda.peso_total = peso_total
+        db.add(encomenda)
+        db.commit()
+        db.refresh(encomenda)
+        
+        requests.post("http://localhost:8000/localizacao", json={"endereco": encomenda.endereco_origem, "id_encomenda": encomenda.id_encomenda})
+
+        return EncomendaOut(
+            id_encomenda=encomenda.id_encomenda,
+            valor_total=encomenda.valor_total,
+            data_postagem=encomenda.data_postagem,
+            endereco_origem=encomenda.endereco_origem,
+            endereco_destino=encomenda.endereco_destino,
+            peso_total=encomenda.peso_total,
+            id_usuario_comprador=encomenda.id_usuario_comprador,
+            id_usuario_vendedor=encomenda.id_usuario_vendedor,
+            produto_ids=[produto.id_produto for produto in encomenda.produtos]
+        )
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Erro ao criar encomenda: {}".format(e))
+
+@router.get("/", summary="Listar Todas as Encomendas")
+def get_encomendas(db: ORM_Session = Depends(get_db)):
+    return db.query(Encomenda).all()
+
+@router.get("/{id}", summary="Obter Encomenda")
+def get_encomenda(id: str = Path(..., description="ID da encomenda que deseja obter."), db: ORM_Session = Depends(get_db)):
+    encomenda = db.query(Encomenda).filter(Encomenda.id_encomenda == id).first()
+    if encomenda:
+        return encomenda
+    raise HTTPException(status_code=404, detail=f"Encomenda com id {id} não encontrada")
+
+@router.put("/{id}", response_model=EncomendaOut, summary="Atualizar Encomenda")
+def update_encomenda(id: str = Path(..., description="ID da encomenda que deseja atualizar."),
+                     encomendaIn: EncomendaIn = Body(
+                         ...,
+                         description="Dados atualizados da encomenda.",
+                         example={
+                             "endereco_origem": "Rua casa do ator 99",
+                             "endereco_destino": "Rua casa do ator 100",
+                             "produto_ids": ["4956c5f1-31ec-4eb4-b417-90753e7bb6fd"],
+                             "id_usuario_comprador": "b2a53b2a-5151-4ef7-ae94-c4992dd119ef",
+                             "id_usuario_vendedor": "13cc3687-050a-4e0f-8f46-3fe63aa6e5db"
+                         }
+                     ), db: ORM_Session = Depends(get_db)):
+    encomenda = db.query(Encomenda).filter(Encomenda.id_encomenda == id).first()
+    if encomenda:
+        try:
+            # Update basic attributes
+            encomenda.endereco_origem = encomendaIn.endereco_origem
+            encomenda.endereco_destino = encomendaIn.endereco_destino
+            encomenda.id_usuario_comprador = encomendaIn.id_usuario_comprador
+            encomenda.id_usuario_vendedor = encomendaIn.id_usuario_vendedor
+
+            # Update associated products
+            encomenda.produtos.clear()  # Clear existing products
+            valor_total = 0
+            peso_total = 0
+            for produto_id in encomendaIn.produto_ids:
+                produto = db.query(Produto).filter(Produto.id_produto == produto_id).first()
+                if produto:
+                    valor_total += produto.preco
+                    peso_total += produto.peso
+                    encomenda.produtos.append(produto)
+                else:
+                    raise HTTPException(status_code=404, detail=f"Produto com ID {produto_id} não encontrado")
+            
+            encomenda.valor_total = valor_total
+            encomenda.peso_total = peso_total
+            
+            db.commit()
+            db.refresh(encomenda)
+            
+            return EncomendaOut(
+                id_encomenda=encomenda.id_encomenda,
+                valor_total=encomenda.valor_total,
+                data_postagem=encomenda.data_postagem,
+                endereco_origem=encomenda.endereco_origem,
+                endereco_destino=encomenda.endereco_destino,
+                peso_total=encomenda.peso_total,
+                id_usuario_comprador=encomenda.id_usuario_comprador,
+                id_usuario_vendedor=encomenda.id_usuario_vendedor,
+                produto_ids=[produto.id_produto for produto in encomenda.produtos]
+            )
+        except IntegrityError as e:
+            db.rollback()
+            raise HTTPException(status_code=400, detail="Erro ao atualizar encomenda: {}".format(e))
+    raise HTTPException(status_code=404, detail=f"Encomenda com id {id} não encontrada")
 
 
-@router.get("/{id}/status")
-def get_status_encomenda(id: str):
+@router.delete("/{id}", summary="Deletar Encomenda")
+def delete_encomenda(id: str = Path(..., description="ID da encomenda que deseja deletar."), db: ORM_Session = Depends(get_db)):
+    encomenda = db.query(Encomenda).filter(Encomenda.id_encomenda == id).first()
+    if encomenda:
+        db.delete(encomenda)
+        db.commit()
+        return {"message": "Encomenda removida"}
+    raise HTTPException(status_code=404, detail=f"Encomenda com id {id} não encontrada")
 
-    """ Rota para listar o status de uma encomenda específica através do id """
+@router.get("/{id}/localizacao", response_model=List[LocalizacaoOut], summary="Obter histórico de Localização da Encomenda")
+def get_status_encomenda(id: str = Path(..., description="ID da encomenda que deseja obter o histórico de localização."), db: ORM_Session = Depends(get_db)):
+    """"
+    Obtém o histórico de localização de uma encomenda específica.
     
-    for e in DB.encomendas:
-        if e.id_encomenda == id:
-            return e.status
-    return {"message": f"Encomenda com id {id} não encontrada"}
+    Parâmetros:
+    - `id`: ID da encomenda que deseja obter o histórico de localização.
+        Exemplo:
+        ```
+        "b2a53b2a-5151-4ef7-ae94-c4992dd119ef"
+        ```
+
+    """
+    localizacoes = db.query(Localizacao).filter(Localizacao.id_encomenda == id).all()
+    return localizacoes
+

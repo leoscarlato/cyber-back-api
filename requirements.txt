@@ -2,3 +2,6 @@ fastapi
 uvicorn[standard]
 passlib
 bcrypt
+requests
+SQLAlchemy
+pymysql
